@@ -970,14 +970,14 @@ document.getElementById('rave-preprocess-btn')?.addEventListener('click', async 
   const btn = document.getElementById('rave-preprocess-btn');
   btn.disabled = true;
   btn.textContent = 'Preprocessing…';
-  // (server-side log)
+
   showRaveProgress('preprocessing');
   try {
     const sr = intVal('rave-sr', 44100);
     await postJSON('/api/rave/preprocess', { sample_rate: sr });
     startRavePoll();
   } catch (e) {
-    // (server-side log)
+  
     btn.disabled = false;
     btn.textContent = 'Run RAVE preprocess';
   }
@@ -999,7 +999,7 @@ document.getElementById('rave-smart-btn')?.addEventListener('click', async () =>
       const w = document.getElementById('rave-rationale');
       if (w) w.textContent += '\n\n⚠ ' + p.warnings.join('\n⚠ ');
     }
-  } catch (e) { // (server-side log) }
+  } catch (_) {}
 });
 
 document.getElementById('rave-train-btn')?.addEventListener('click', async () => {
@@ -1035,7 +1035,7 @@ document.getElementById('rave-train-btn')?.addEventListener('click', async () =>
 });
 
 document.getElementById('rave-stop-btn')?.addEventListener('click', async () => {
-  // (server-side log)
+
   await postJSON('/api/rave/stop', {});
 });
 
@@ -1120,7 +1120,6 @@ function applyRaveStatus(s) {
   } else if (s.status === 'error') {
     stopBtn?.classList.add('hidden');
     if (trainBtn) trainBtn.disabled = false;
-    if (s.error) // (server-side log)
   }
 }
 
@@ -1160,12 +1159,7 @@ function showRaveProgress(status, step, total) {
   }
 }
 
-function // (server-side log)
-  if (!inner) return;
-  if (inner.textContent === 'Log will appear here…') inner.textContent = '';
-  inner.textContent += line + '\n';
-  inner.parentElement.scrollTop = inner.parentElement.scrollHeight;
-}
+// (appendRaveLog removed — all log writes go through server _rave_log)
 
 async function refreshRaveUI() {
   try {
