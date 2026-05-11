@@ -313,31 +313,33 @@ def train(
     _last_prog_log    = 0.0   # throttle progress-bar log lines
     _PROG_INTERVAL    = 15.0  # seconds between logged progress updates
 
-    # Lines emitted by RAVE that add no information and inflate the log
-    _NOISE_PREFIXES = (
-        "(",           # model layer descriptions: "(encoder): ..."
-        "  (",         # indented layer
-        "| ",          # param table rows
-        "---",         # table separators
-        "UserWarning", # pytorch-lightning float conversion warnings
-        "warning_cache.warn",
-        "WeightNorm",
-        "FutureWarning",
-        "/home",       # full-path warning source lines
-    )
-    _NOISE_SUBSTRINGS = (
-        "kernel_size=", "stride=", "bias=", "padding=",
-        "negative_slope=", "ModuleList", "Sequential(",
-        "torch.nn.utils.weight_norm",
+    # Compiled regex that matches every category of RAVE startup noise.
+    # Tested against real output — see commit message for the full list.
+    _NOISE_RE = re.compile(
+        r'^\s*\)\s*$'                       # closing bracket on its own line
+        r'|^\s*\('                          # opening bracket (layer descriptions)
+        r'|^\s*\d+\s*\|'                    # "0 | pqmf | ..." table rows
+        r'|^\s*\|'                          # "| Name | Type |" header row
+        r'|^\s*-{3,}'                       # "---" separator lines
+        r'|^\s*\d[\d.]*\s+[MK]\b'          # "58.7 M  Trainable params"
+        r'|^\s*\d+\s+[MK]\b'               # "0  M  Non-trainable"
+        r'|\bTPU available\b'
+        r'|\bIPU available\b'
+        r'|\bHPU available\b'
+        r'|\bLOCAL_RANK\b'
+        r'|\bUserWarning\b'
+        r'|warning_cache\.warn'
+        r'|\bWeightNorm\b'
+        r'|\bFutureWarning\b'
+        r'|torch\.nn\.utils\.weight_norm'
+        r'|kernel_size=|stride=|negative_slope='
+        r'|ModuleList|CachedSequential'
+        r'|Trainable params|Non-trainable params|Total params|params size'
+        r'|^/.*\.py:\d+:',                  # "/path/to/file.py:232: UserWarning..."
     )
 
     def _is_noise(line: str) -> bool:
-        stripped = line.lstrip()
-        if any(stripped.startswith(p) for p in _NOISE_PREFIXES):
-            return True
-        if any(s in line for s in _NOISE_SUBSTRINGS):
-            return True
-        return False
+        return bool(_NOISE_RE.search(line))
 
     def _handle_line(raw_line: bytes, is_progress: bool) -> None:
         nonlocal _current_epoch, _steps_per_epoch, _global_step, _last_prog_log
