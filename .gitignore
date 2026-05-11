@@ -9,4 +9,6 @@ logs/
 checkpoints/
 *.egg-info/
 .venv/
-venv/
+venv/runs/
+status/
+config.json
