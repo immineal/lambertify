@@ -582,13 +582,17 @@ async function updateStatusBanner(s) {
     }
   } catch (_) {}
 
-  // Determine if active model is RAVE
-  const isRave = am?.backend === 'rave';
+  // Derive active-model info from the rave status response itself —
+  // applyRaveStatus() has no access to the outer `am` from updateStatusBanner.
+  // /api/rave/status now includes _model_state() so vae_ready and active_model
+  // are available here without a second fetch.
+  const activeModel = s.active_model;
+  const isRave      = activeModel?.backend === 'rave';
 
   // Generate tab warnings + controls
-  const noVae     = document.getElementById('gen-no-vae-warn');
-  const noLstm    = document.getElementById('gen-no-lstm-warn');
-  const vaeCtrls  = document.getElementById('gen-vae-controls');
+  const noVae    = document.getElementById('gen-no-vae-warn');
+  const noLstm   = document.getElementById('gen-no-lstm-warn');
+  const vaeCtrls = document.getElementById('gen-vae-controls');
   if (noVae)    noVae.style.display    = (s.vae_ready || isRave) ? 'none' : '';
   if (noLstm)   noLstm.style.display   = (s.vae_ready && !s.lstm_ready && !isRave) ? '' : 'none';
   if (vaeCtrls) vaeCtrls.style.display = isRave ? 'none' : '';
@@ -1070,7 +1074,8 @@ async function pollRave() {
       _ravePollIv = null;
       if (s.status === 'done') {
         loadModelsTab();
-        updateStatusBanner({ vae_ready: true });
+        // Fetch fresh train_status so updateStatusBanner gets real active_model
+        fetchJSON('/api/train_status').then(ts => updateStatusBanner(ts)).catch(() => {});
       }
     }
   } catch (_) {}

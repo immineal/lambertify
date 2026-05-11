@@ -803,6 +803,7 @@ def api_rave_status():
         "vram_estimate":    _rave.estimate_vram_mb(
             batch_size=int(request.args.get("batch", 8))
         ),
+        **_model_state(),   # vae_ready, active_model, cache_loaded — used by JS to manage generate-tab warnings
         "log_tail":         _rave_state["log"][-100:],
     })
 
