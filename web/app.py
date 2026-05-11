@@ -553,14 +553,27 @@ def api_generate():
             _jobs[job_id]["status"] = "running"
         out_path = str(OUTPUT_DIR / f"{job_id}.wav")
         try:
+            import numpy as np, torch as _torch
+            if seed is not None:
+                _torch.manual_seed(seed)
+                np.random.seed(seed)
+
+            active = _registry.get_active()
+            backend = (active or {}).get("backend", "vae_lstm")
+
             if _cache.is_loaded():
-                import numpy as np, torch
-                if seed is not None:
-                    torch.manual_seed(seed)
-                    np.random.seed(seed)
-                _cache._generate_vae(duration, temperature, gl_iters, out_path) \
-                    if _cache.backend == "vae_lstm" \
-                    else _cache._generate_rave(duration, temperature, out_path)
+                if _cache.backend == "rave":
+                    _cache._generate_rave(duration, temperature, out_path)
+                else:
+                    _cache._generate_vae(duration, temperature, gl_iters, out_path)
+            elif backend == "rave":
+                # RAVE active but not cached — generate directly from the .ts file
+                rave_path = (active or {}).get("rave_path", "")
+                if not rave_path or not Path(rave_path).exists():
+                    raise FileNotFoundError(f"RAVE model file not found: {rave_path}")
+                device_str = "cuda" if _torch.cuda.is_available() else "cpu"
+                from src.rave_backend import generate as rave_gen
+                rave_gen(rave_path, duration, temperature, out_path, device_str)
             else:
                 from src.generate import generate_audio
                 generate_audio(
@@ -897,7 +910,8 @@ def api_rave_train():
                     model_id=model_id,
                     model_path=model_path,
                     config=params,
-                    name=f"RAVE {params['config']} — {params['name']}",
+                    steps=_rave_state["step"],
+                    name=f"RAVE {params['config']} — {params['name']} ({_rave_state['step']:,} steps)",
                     make_active=True,
                 )
             else:

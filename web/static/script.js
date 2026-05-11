@@ -570,11 +570,16 @@ async function updateStatusBanner(s) {
     }
   } catch (_) {}
 
-  // Generate tab warnings
-  const noVae  = document.getElementById('gen-no-vae-warn');
-  const noLstm = document.getElementById('gen-no-lstm-warn');
-  if (noVae)  noVae.style.display  = s.vae_ready ? 'none' : '';
-  if (noLstm) noLstm.style.display = (s.vae_ready && !s.lstm_ready) ? '' : 'none';
+  // Determine if active model is RAVE
+  const isRave = am?.backend === 'rave';
+
+  // Generate tab warnings + controls
+  const noVae     = document.getElementById('gen-no-vae-warn');
+  const noLstm    = document.getElementById('gen-no-lstm-warn');
+  const vaeCtrls  = document.getElementById('gen-vae-controls');
+  if (noVae)    noVae.style.display    = s.vae_ready ? 'none' : '';
+  if (noLstm)   noLstm.style.display   = (s.vae_ready && !s.lstm_ready && !isRave) ? '' : 'none';
+  if (vaeCtrls) vaeCtrls.style.display = isRave ? 'none' : '';
 
   // Generate button
   const genBtn = document.getElementById('generate-btn');

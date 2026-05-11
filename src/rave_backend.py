@@ -443,24 +443,24 @@ def generate(
     model.eval()
 
     try:
-        sr         = int(model.sr)
-        latent_dim = int(model.latent_size)
+        sr = int(model.sr)
     except Exception:
-        sr, latent_dim = 44100, 16
+        sr = 44100
 
+    probe_len = 8192
     try:
-        ratio = int(model.encode_params[0])
+        with torch.no_grad():
+            z_probe    = model.encode(torch.zeros(1, 1, probe_len, device=device))
+        latent_dim = z_probe.shape[1]
+        ratio      = max(1, probe_len // max(1, z_probe.shape[2]))
     except Exception:
-        ratio = 2048
+        latent_dim, ratio = 1, 2048
 
     z = torch.randn(1, latent_dim, max(1, int(duration_s * sr / ratio)),
                     device=device) * temperature
 
     with torch.no_grad():
-        try:
-            y = model.decode(z)
-        except Exception:
-            y = model(torch.randn(1, 1, int(duration_s * sr), device=device) * 0.01)
+        y = model.decode(z)
 
     audio = y.squeeze().cpu().numpy()
     if audio.ndim > 1:

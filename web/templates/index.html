@@ -458,13 +458,22 @@
 
         <div id="gen-no-vae-warn" class="banner banner-warn"
              style="margin-bottom:16px{% if model_state.vae_ready %};display:none{% endif %}">
-          VAE not trained — train the model first.
+          No model ready — train or select a model first.
         </div>
 
+        {% set active = model_state.active_model %}
+        {% set is_rave = active and active.backend == 'rave' %}
+
         <div id="gen-no-lstm-warn" class="banner banner-warn"
-             style="margin-bottom:16px{% if model_state.lstm_ready or not model_state.vae_ready %};display:none{% endif %}">
+             style="margin-bottom:16px{% if model_state.lstm_ready or not model_state.vae_ready or is_rave %};display:none{% endif %}">
           LSTM not trained — using spherical latent interpolation (less temporally coherent).
         </div>
+
+        {% if is_rave %}
+        <div class="banner banner-ok" style="margin-bottom:16px">
+          RAVE model active: <strong>{{ active.name }}</strong>
+        </div>
+        {% endif %}
 
         <div class="field-row">
           <label for="g-duration">Duration</label>
@@ -483,19 +492,20 @@
           <div class="field-hint">Low (0.3–0.7) = calm, predictable. High (1.2–2.0) = experimental, chaotic.</div>
         </div>
 
-        <div class="field-row">
-          <label for="g-gl-iters">Griffin-Lim iters</label>
-          <div class="slider-wrap">
-            <input type="range" id="g-gl-iters" min="16" max="256" step="8" value="64" />
-            <span class="slider-val" id="g-gl-iters-val">64</span>
+        <div id="gen-vae-controls" {% if is_rave %}style="display:none"{% endif %}>
+          <div class="field-row">
+            <label for="g-gl-iters">Griffin-Lim iters</label>
+            <div class="slider-wrap">
+              <input type="range" id="g-gl-iters" min="16" max="256" step="8" value="128" />
+              <span class="slider-val" id="g-gl-iters-val">128</span>
+            </div>
+            <div class="field-hint">VAE+LSTM only. More iterations = cleaner audio. 128 is a good default.</div>
           </div>
-          <div class="field-hint">More iterations = higher audio quality but slower generation. 64–128 is a good range.</div>
-        </div>
-
-        <div class="field-row">
-          <label for="g-seed">Seed</label>
-          <input type="number" id="g-seed" placeholder="random" min="0" max="2147483647" />
-          <div class="field-hint">Leave blank for random. Use a number to reproduce a specific generation.</div>
+          <div class="field-row">
+            <label for="g-seed">Seed</label>
+            <input type="number" id="g-seed" placeholder="random" min="0" max="2147483647" />
+            <div class="field-hint">VAE+LSTM only. Leave blank for random. Use a number to reproduce a generation.</div>
+          </div>
         </div>
 
         <div class="btn-row">

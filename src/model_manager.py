@@ -162,6 +162,16 @@ class ModelRegistry:
                 self._save()
                 return self._data["models"][i]
 
+        # Deduplicate: if same rave_path already registered, update instead of adding
+        if "rave_path" in entry:
+            for i, m in enumerate(self._data["models"]):
+                if m.get("rave_path") == entry["rave_path"]:
+                    self._data["models"][i] = {**m, **entry}
+                    if make_active:
+                        self._data["active_model"] = m["id"]
+                    self._save()
+                    return self._data["models"][i]
+
         self._data["models"].append(entry)
         if make_active:
             self._data["active_model"] = model_id
@@ -392,36 +402,35 @@ class ModelCache:
         model  = self.rave
         device = torch.device(self.device or "cpu")
 
-        # Get model attributes — TorchScript models expose these as attributes
+        # sr is reliably exposed as an attribute
         try:
-            sr         = int(model.sr)
-            latent_dim = int(model.latent_size)
+            sr = int(model.sr)
         except Exception:
-            sr         = 44100
-            latent_dim = 16
+            sr = 44100
 
-        # Compute latent time steps for desired duration
-        # RAVE v2 typical downsampling ratio: 2048 samples per latent frame
+        # Probe latent_dim and compression ratio by encoding a short dummy signal.
+        # model.encode_params[0] returns 1 (batch size placeholder), NOT the hop.
+        # The encode probe is the only reliable way to get both values.
+        probe_len  = 8192
         try:
-            ratio = int(model.encode_params[0])
+            with torch.no_grad():
+                dummy  = torch.zeros(1, 1, probe_len, device=device)
+                z_probe = model.encode(dummy)
+            latent_dim = z_probe.shape[1]
+            ratio      = max(1, probe_len // max(1, z_probe.shape[2]))
         except Exception:
-            ratio = 2048
+            latent_dim = 1
+            ratio      = 2048
+
         z_steps = max(1, int(duration_s * sr / ratio))
-
         z = torch.randn(1, latent_dim, z_steps, device=device) * temperature
+
         with torch.no_grad():
-            try:
-                y = model.decode(z)
-            except Exception:
-                # Fallback: call model directly
-                z_flat = torch.randn(1, 1, int(duration_s * sr), device=device) * 0.01
-                y = model(z_flat)
+            y = model.decode(z)
 
         audio = y.squeeze().cpu().numpy()
         if audio.ndim > 1:
             audio = audio[0]
-
-        # Normalise
         peak = np.abs(audio).max()
         if peak > 0:
             audio = audio / peak * 0.95
