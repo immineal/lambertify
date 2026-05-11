@@ -112,14 +112,29 @@ def _progress_cb(stage: str, epoch: int, total: int,
 
 def _model_state() -> dict:
     active = _registry.get_active()
-    vae_path  = Path(active["vae_path"])  if active else CHECKPOINT_DIR / "vae_best.pt"
-    lstm_path = Path(active["lstm_path"]) if (active and active.get("lstm_path")) else CHECKPOINT_DIR / "lstm_best.pt"
+    preprocessed = (PROCESSED_DIR / "chunks.npy").exists()
+
+    if active and active.get("backend") == "rave":
+        rave_path = Path(active.get("rave_path", ""))
+        ready = rave_path.exists()
+        return {
+            "vae_ready":      ready,   # "ready" means we can generate
+            "lstm_ready":     False,
+            "preprocessed":   preprocessed,
+            "active_model":   active,
+            "cache_loaded":   _cache.is_loaded(),
+            "cache_model_id": _cache.model_id,
+        }
+
+    # VAE+LSTM path
+    vae_path  = Path(active["vae_path"])       if (active and active.get("vae_path"))  else CHECKPOINT_DIR / "vae_best.pt"
+    lstm_path = Path(active["lstm_path"])      if (active and active.get("lstm_path")) else CHECKPOINT_DIR / "lstm_best.pt"
     return {
-        "vae_ready":     vae_path.exists(),
-        "lstm_ready":    lstm_path.exists(),
-        "preprocessed":  (PROCESSED_DIR / "chunks.npy").exists(),
-        "active_model":  active,
-        "cache_loaded":  _cache.is_loaded(),
+        "vae_ready":      vae_path.exists(),
+        "lstm_ready":     lstm_path.exists(),
+        "preprocessed":   preprocessed,
+        "active_model":   active,
+        "cache_loaded":   _cache.is_loaded(),
         "cache_model_id": _cache.model_id,
     }
 
