@@ -267,6 +267,13 @@ def train(
     else:
         gpu_flags = ["--gpu", "-1"]
 
+    # val_every controls how often RAVE saves a checkpoint.
+    # With ~1103 steps/epoch, val_every=10000 means ~9 epochs between saves.
+    # If training is stopped before the first save the export gets a random model.
+    # Scale to ~every 2 epochs, capped at 5000 so short runs still checkpoint.
+    steps_per_epoch_est = 1100   # empirical for this dataset at batch=8
+    val_every = max(1000, min(5000, steps_per_epoch_est * 2))
+
     cmd = [
         str(RAVE_BINARY),
         "train",
@@ -276,7 +283,7 @@ def train(
         "--n_signal",  str(n_signal),
         "--batch",     str(batch_size),
         "--max_steps", str(n_steps),
-        "--val_every", "10000",
+        "--val_every", str(val_every),
         "--workers",   str(workers),
         *gpu_flags,
     ]
@@ -306,11 +313,40 @@ def train(
     _last_prog_log    = 0.0   # throttle progress-bar log lines
     _PROG_INTERVAL    = 15.0  # seconds between logged progress updates
 
+    # Lines emitted by RAVE that add no information and inflate the log
+    _NOISE_PREFIXES = (
+        "(",           # model layer descriptions: "(encoder): ..."
+        "  (",         # indented layer
+        "| ",          # param table rows
+        "---",         # table separators
+        "UserWarning", # pytorch-lightning float conversion warnings
+        "warning_cache.warn",
+        "WeightNorm",
+        "FutureWarning",
+        "/home",       # full-path warning source lines
+    )
+    _NOISE_SUBSTRINGS = (
+        "kernel_size=", "stride=", "bias=", "padding=",
+        "negative_slope=", "ModuleList", "Sequential(",
+        "torch.nn.utils.weight_norm",
+    )
+
+    def _is_noise(line: str) -> bool:
+        stripped = line.lstrip()
+        if any(stripped.startswith(p) for p in _NOISE_PREFIXES):
+            return True
+        if any(s in line for s in _NOISE_SUBSTRINGS):
+            return True
+        return False
+
     def _handle_line(raw_line: bytes, is_progress: bool) -> None:
         nonlocal _current_epoch, _steps_per_epoch, _global_step, _last_prog_log
 
         line = raw_line.decode("utf-8", errors="replace").strip()
         if not line:
+            return
+
+        if _is_noise(line):
             return
 
         # Parse "Epoch X:" to track which epoch we're in
