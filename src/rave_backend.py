@@ -18,6 +18,36 @@ import glob
 import os
 import re
 import subprocess
+
+# ---------------------------------------------------------------------------
+# Module-level noise filter — applied to both training and export output.
+# Keeps anything genuinely informative; drops everything else.
+# ---------------------------------------------------------------------------
+_NOISE_RE = re.compile(
+    r'^\s*\)\s*$'                        # bare closing bracket
+    r'|^\s*\('                           # opening bracket (layer descriptions)
+    r'|^\s*\d+\s*\|'                     # "0 | pqmf | ..." table rows
+    r'|^\s*\|'                           # "| Name | Type |" header
+    r'|^\s*-{3,}'                        # "---" separators
+    r'|^\s*\d[\d.]*\s+[MK]\b'           # "58.7 M  Trainable params"
+    r'|^\s*\d+\s+[MK]\b'                # "0  M  Non-trainable"
+    r'|Trainable params|Non-trainable params|Total params|params size'
+    r'|\bTPU available\b|\bIPU available\b|\bHPU available\b'
+    r'|\bLOCAL_RANK\b'
+    r'|\bUserWarning\b|warning_cache\.warn'
+    r'|\bWeightNorm\b|\bFutureWarning\b|torch\.nn\.utils\.weight_norm'
+    r'|kernel_size=|stride=|negative_slope='
+    r'|ModuleList|CachedSequential'
+    r'|^/.*\.py:\d+:'                    # "/path/to.py:232: UserWarning ..."
+    # Export-phase noise
+    r'|INFO:root:'                        # "INFO:root:library loading"
+    r'|^[IE]\d{4}\s'                     # "I0511 21:20:34... export.py:..." (abseil logs)
+    r'|Registering method|Testing method|Added method'
+    r'|buffer size \d+'
+    r'|building rave|warmup pass|optimize model|script model|save model'
+    r'|system_path_file_exists|Path not found'   # gin config search noise
+    r'|resource_reader'
+)
 import sys
 import threading
 import time
@@ -313,31 +343,6 @@ def train(
     _last_prog_log    = 0.0   # throttle progress-bar log lines
     _PROG_INTERVAL    = 15.0  # seconds between logged progress updates
 
-    # Compiled regex that matches every category of RAVE startup noise.
-    # Tested against real output — see commit message for the full list.
-    _NOISE_RE = re.compile(
-        r'^\s*\)\s*$'                       # closing bracket on its own line
-        r'|^\s*\('                          # opening bracket (layer descriptions)
-        r'|^\s*\d+\s*\|'                    # "0 | pqmf | ..." table rows
-        r'|^\s*\|'                          # "| Name | Type |" header row
-        r'|^\s*-{3,}'                       # "---" separator lines
-        r'|^\s*\d[\d.]*\s+[MK]\b'          # "58.7 M  Trainable params"
-        r'|^\s*\d+\s+[MK]\b'               # "0  M  Non-trainable"
-        r'|\bTPU available\b'
-        r'|\bIPU available\b'
-        r'|\bHPU available\b'
-        r'|\bLOCAL_RANK\b'
-        r'|\bUserWarning\b'
-        r'|warning_cache\.warn'
-        r'|\bWeightNorm\b'
-        r'|\bFutureWarning\b'
-        r'|torch\.nn\.utils\.weight_norm'
-        r'|kernel_size=|stride=|negative_slope='
-        r'|ModuleList|CachedSequential'
-        r'|Trainable params|Non-trainable params|Total params|params size'
-        r'|^/.*\.py:\d+:',                  # "/path/to/file.py:232: UserWarning..."
-    )
-
     def _is_noise(line: str) -> bool:
         return bool(_NOISE_RE.search(line))
 
@@ -525,7 +530,7 @@ def _run_logged(cmd: list, log_cb: LogCB, label: str, cwd: str | None = None) ->
     )
     for raw in proc.stdout:
         line = raw.rstrip()
-        if line and log_cb:
+        if line and log_cb and not _NOISE_RE.search(line):
             log_cb(line)
     proc.wait()
     if proc.returncode != 0:

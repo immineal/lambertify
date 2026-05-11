@@ -53,8 +53,14 @@ if __name__ == "__main__":
     p.add_argument("--debug", action="store_true", help="Flask debug mode (auto-reload)")
     args = p.parse_args()
 
+    # Suppress Werkzeug's per-request access log — it floods the terminal
+    # with every /api/hw poll.  Errors still print because they use WARNING+.
+    import logging
+    logging.getLogger("werkzeug").setLevel(logging.ERROR)
+
     _print_startup_info()
     print(f"  Web UI at  http://127.0.0.1:{args.port}")
+    print(f"  Press Ctrl-C to stop")
     print()
 
     app.run(
