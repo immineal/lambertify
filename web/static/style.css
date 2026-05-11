@@ -452,7 +452,7 @@ button:disabled      { opacity: .38; cursor: not-allowed; }
   background: #0a0a0d;
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
-  height: 220px;
+  height: 160px;
   overflow-y: auto;
   font-family: 'Fira Code', monospace;
   font-size: .75rem;

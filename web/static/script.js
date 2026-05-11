@@ -495,7 +495,17 @@ function updateTrainUI(s) {
 
   let statusStr = 'Idle';
   if (s.status === 'training') {
-    statusStr = `Training ${s.stage?.toUpperCase() || ''} — epoch ${s.epoch}/${s.total_epochs}`;
+    // ETA: use epoch rate — VAE training stores started timestamp in s.started
+    const eta = (() => {
+      if (!s.epoch || !s.total_epochs || !s.started) return '';
+      const elapsed = Date.now()/1000 - new Date(s.started).getTime()/1000;
+      if (elapsed < 5) return '';
+      const epochRate = s.epoch / elapsed;
+      if (epochRate <= 0) return '';
+      return _fmtEta((s.total_epochs - s.epoch) / epochRate);
+    })();
+    const etaStr = eta ? `  — ETA ${eta}` : '';
+    statusStr = `Training ${s.stage?.toUpperCase() || ''} — epoch ${s.epoch}/${s.total_epochs}${etaStr}`;
   } else if (s.status === 'preprocessing') {
     statusStr = 'Preprocessing…';
   } else if (s.status === 'done') {
@@ -539,8 +549,7 @@ function updateTrainUI(s) {
 function updateTrainLog(lines) {
   const inner = document.getElementById('train-log-inner');
   if (!inner) return;
-  // Show last 100 lines only — keeps the DOM lean
-  inner.textContent = lines.slice(-100).join('\n');
+  inner.textContent = lines.slice(-40).join('\n');
   const box = document.getElementById('train-log-box');
   if (box) box.scrollTop = box.scrollHeight;
 }
@@ -1105,13 +1114,13 @@ function applyRaveStatus(s) {
   }
 
   // Shared live status bar
-  showRaveProgress(s.status, s.step, s.total_steps);
+  showRaveProgress(s.status, s.step, s.total_steps, s.started_ts, s.vram_mb);
 
-  // Feed last 100 log lines into the shared Train tab log box
+  // Feed last 40 log lines into the shared Train tab log box
   if (s.log_tail?.length) {
     const inner = document.getElementById('train-log-inner');
     if (inner) {
-      inner.textContent = s.log_tail.slice(-100).join('\n');
+      inner.textContent = s.log_tail.slice(-40).join('\n');
       inner.parentElement.scrollTop = inner.parentElement.scrollHeight;
     }
   }
@@ -1128,24 +1137,63 @@ function applyRaveStatus(s) {
   }
 }
 
-function showRaveProgress(status, step, total) {
-  const statusEl = document.getElementById('live-status');
-  const progWrap = document.getElementById('train-progress-wrap');
-  const progBar  = document.getElementById('train-progress-bar');
-  const progVal  = document.getElementById('train-progress-val');
+// ETA tracker: persists across polls so the rate estimate smooths over time
+const _etaTracker = { startTs: null, startStep: 0 };
+
+function _fmtEta(remainingSec) {
+  if (!isFinite(remainingSec) || remainingSec <= 0) return '';
+  if (remainingSec < 60)   return `${Math.round(remainingSec)}s`;
+  if (remainingSec < 3600) return `${Math.floor(remainingSec/60)}m ${Math.round(remainingSec%60)}s`;
+  const h = Math.floor(remainingSec/3600);
+  const m = Math.floor((remainingSec%3600)/60);
+  return `${h}h ${m}m`;
+}
+
+function _computeEta(step, total, startedTs) {
+  if (!step || !total || !startedTs) return '';
+  const now     = Date.now() / 1000;
+  const elapsed = now - startedTs;
+  if (elapsed < 5) return '';                   // not enough data yet
+  const rate    = step / elapsed;               // steps/sec
+  if (rate <= 0)   return '';
+  const remaining = (total - step) / rate;
+  return _fmtEta(remaining);
+}
+
+function showRaveProgress(status, step, total, startedTs, vramMb) {
+  const statusEl  = document.getElementById('live-status');
+  const progWrap  = document.getElementById('train-progress-wrap');
+  const progBar   = document.getElementById('train-progress-bar');
+  const progVal   = document.getElementById('train-progress-val');
   const progLabel = document.getElementById('progress-label');
+  const vramBar   = document.getElementById('live-vram-bar');
+  const vramVal   = document.getElementById('live-vram-val');
 
   if (!statusEl) return;
-
   const colors = { done: 'var(--ok)', error: 'var(--danger)', idle: 'var(--text-dim)' };
   statusEl.style.color = colors[status] || 'var(--warn)';
 
   if (status === 'training' && total > 0) {
-    statusEl.textContent = `RAVE training — step ${(step||0).toLocaleString()} / ${total.toLocaleString()}`;
-    if (progWrap) progWrap.style.display = '';
-    if (progLabel) progLabel.textContent = 'Steps';
-    if (progBar)   progBar.style.width = Math.min(100, ((step||0) / total * 100)).toFixed(1) + '%';
-    if (progVal)   progVal.textContent = `${(step||0).toLocaleString()} / ${total.toLocaleString()}`;
+    const eta    = _computeEta(step||0, total, startedTs);
+    const etaStr = eta ? ` — ETA ${eta}` : '';
+    statusEl.textContent = `RAVE training — step ${(step||0).toLocaleString()} / ${total.toLocaleString()}${etaStr}`;
+    if (progWrap)  progWrap.style.display  = '';
+    if (progLabel) progLabel.textContent   = 'Steps';
+    if (progBar)   progBar.style.width     = Math.min(100, ((step||0) / total * 100)).toFixed(1) + '%';
+    if (progVal)   progVal.textContent     = eta
+      ? `${(step||0).toLocaleString()} / ${total.toLocaleString()}  (ETA ${eta})`
+      : `${(step||0).toLocaleString()} / ${total.toLocaleString()}`;
+
+    // Live VRAM from nvidia-smi poll
+    const gpuTotal = window._hwLastGpuTotal || 8192;
+    if (vramMb > 0) {
+      const pct = Math.min(100, vramMb / gpuTotal * 100);
+      if (vramBar) {
+        vramBar.style.width  = pct.toFixed(1) + '%';
+        vramBar.className    = 'bar-fill ' + (pct > 90 ? 'bar-danger' : pct > 75 ? 'bar-warn' : '');
+      }
+      if (vramVal) vramVal.textContent = `${vramMb} / ${gpuTotal} MB  (${pct.toFixed(0)}%)`;
+    }
   } else if (status === 'preprocessing') {
     statusEl.textContent = 'RAVE preprocessing…';
     if (progWrap) progWrap.style.display = 'none';

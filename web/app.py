@@ -756,12 +756,14 @@ def _generate_with_best_logic(duration, temperature, gl_iters, seed, out_path):
 # ---------------------------------------------------------------------------
 
 _rave_state: dict = {
-    "status":     "idle",   # idle | installing | preprocessing | training | done | error
-    "step":       0,
+    "status":      "idle",
+    "step":        0,
     "total_steps": 0,
-    "log":        [],
-    "error":      None,
-    "model_path": None,
+    "vram_mb":     0,
+    "started_ts":  None,   # unix timestamp when training began (for ETA)
+    "log":         [],
+    "error":       None,
+    "model_path":  None,
     "preprocess_ready": False,
 }
 _rave_stop_event = threading.Event()
@@ -792,6 +794,8 @@ def api_rave_status():
         "status":           _rave_state["status"],
         "step":             _rave_state["step"],
         "total_steps":      _rave_state["total_steps"],
+        "vram_mb":          _rave_state["vram_mb"],
+        "started_ts":       _rave_state["started_ts"],
         "error":            _rave_state["error"],
         "model_path":       _rave_state["model_path"],
         "preprocess_ready": _rave.preprocess_ready(str(_data_dir())),
@@ -886,11 +890,22 @@ def api_rave_train():
 
     _rave_state.update(
         status="training", step=0, total_steps=params["n_steps"],
+        vram_mb=0, started_ts=time.time(),
         error=None, model_path=None,
     )
     _rave_state["log"].clear()
     _rave_stop_event.clear()
     _rave_log(f"Starting RAVE training — {params}")
+
+    def _vram_poll():
+        """Poll GPU VRAM every 5 s while RAVE training is active."""
+        while _rave_state["status"] == "training":
+            gpus = query_gpus()
+            if gpus:
+                _rave_state["vram_mb"] = gpus[0].vram_used_mb
+            time.sleep(5)
+
+    threading.Thread(target=_vram_poll, daemon=True).start()
 
     def _run():
         try:
