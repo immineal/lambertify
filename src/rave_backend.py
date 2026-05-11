@@ -402,7 +402,9 @@ def train(
         if stop_event and stop_event.is_set():
             proc.terminate()
             if log_cb:
-                log_cb("[RAVE] stopped by user — exporting current checkpoint…")
+                log_cb("[RAVE] SIGTERM sent — waiting for checkpoint flush…")
+            # Give pytorch-lightning time to write last.ckpt before we export
+            time.sleep(3)
             break
 
     # Flush any remaining partial line

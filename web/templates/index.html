@@ -72,10 +72,11 @@
   </section>
 
   <!-- ===== Status banner ===== -->
+  {% set am = model_state.active_model %}
+  {% set is_rave_active = am and am.backend == 'rave' %}
   <div id="status-banner" class="banner
-    {% if model_state.vae_ready %}banner-ok{% else %}banner-warn{% endif %}">
+    {% if model_state.vae_ready %}banner-ok{% elif is_rave_active %}banner-warn{% else %}banner-warn{% endif %}">
     {% if model_state.vae_ready %}
-      {% set am = model_state.active_model %}
       {% if am %}
         Active: <strong>{{ am.name }}</strong>
         {% if am.backend == 'vae_lstm' %}
@@ -89,6 +90,9 @@
       {% else %}
         Model ready for generation
       {% endif %}
+    {% elif is_rave_active %}
+      RAVE model selected (<strong>{{ am.name }}</strong>) but not yet exported &mdash;
+      run training and stop to export, or re-export manually.
     {% else %}
       No model trained yet &mdash; preprocess data then start training.
     {% endif %}
@@ -458,13 +462,19 @@
       <div class="panel-left">
         <h3 class="section-title">Generation settings</h3>
 
+        {% set active = model_state.active_model %}
+        {% set is_rave = active and active.backend == 'rave' %}
+
         <div id="gen-no-vae-warn" class="banner banner-warn"
-             style="margin-bottom:16px{% if model_state.vae_ready %};display:none{% endif %}">
+             style="margin-bottom:16px{% if model_state.vae_ready or is_rave %};display:none{% endif %}">
           No model ready — train or select a model first.
         </div>
 
-        {% set active = model_state.active_model %}
-        {% set is_rave = active and active.backend == 'rave' %}
+        {% if is_rave and not model_state.vae_ready %}
+        <div class="banner banner-warn" style="margin-bottom:16px">
+          RAVE model not exported yet — run training and click Stop to export first.
+        </div>
+        {% endif %}
 
         <div id="gen-no-lstm-warn" class="banner banner-warn"
              style="margin-bottom:16px{% if model_state.lstm_ready or not model_state.vae_ready or is_rave %};display:none{% endif %}">

@@ -573,6 +573,9 @@ async function updateStatusBanner(s) {
       if (ms.cache?.loaded) text += ' · loaded in memory';
       banner.innerHTML = text;
       banner.className = 'banner banner-ok';
+    } else if (banner && !s.vae_ready && am?.backend === 'rave') {
+      banner.innerHTML = `RAVE model selected (<strong>${am.name}</strong>) — not yet exported. Run training and stop to export.`;
+      banner.className = 'banner banner-warn';
     } else if (banner && !s.vae_ready) {
       banner.textContent = 'No model trained yet — preprocess data then start training.';
       banner.className = 'banner banner-warn';
@@ -586,7 +589,7 @@ async function updateStatusBanner(s) {
   const noVae     = document.getElementById('gen-no-vae-warn');
   const noLstm    = document.getElementById('gen-no-lstm-warn');
   const vaeCtrls  = document.getElementById('gen-vae-controls');
-  if (noVae)    noVae.style.display    = s.vae_ready ? 'none' : '';
+  if (noVae)    noVae.style.display    = (s.vae_ready || isRave) ? 'none' : '';
   if (noLstm)   noLstm.style.display   = (s.vae_ready && !s.lstm_ready && !isRave) ? '' : 'none';
   if (vaeCtrls) vaeCtrls.style.display = isRave ? 'none' : '';
 
