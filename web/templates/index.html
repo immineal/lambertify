@@ -1,0 +1,601 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Lambertify — AI Music Generator</title>
+  <link rel="stylesheet" href="/static/style.css" />
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+</head>
+<body>
+<div class="app">
+
+  <!-- ===== Header ===== -->
+  <header>
+    <h1>Lambertify</h1>
+    <p class="subtitle">VAE + LSTM ambient music generation &mdash; Lambert style</p>
+  </header>
+
+  <!-- ===== Hardware bar ===== -->
+  <section class="hw-bar" id="hw-bar">
+    {% for gpu in gpus %}
+    <div class="hw-card" id="gpu-card-{{ gpu.index }}">
+      <div class="hw-label">GPU {{ gpu.index }}</div>
+      <div class="hw-name">{{ gpu.name }}</div>
+      <div class="hw-row">
+        <span class="hw-key">VRAM</span>
+        <div class="bar-wrap">
+          <div class="bar-fill" id="vram-bar-{{ gpu.index }}"
+               style="width:{{ (gpu.vram_used_mb / gpu.vram_total_mb * 100)|round(1) }}%"
+               data-pct="{{ (gpu.vram_used_mb / gpu.vram_total_mb * 100)|round(1) }}"></div>
+        </div>
+        <span class="hw-val" id="vram-val-{{ gpu.index }}">
+          {{ gpu.vram_used_mb }} / {{ gpu.vram_total_mb }} MB
+        </span>
+      </div>
+      <div class="hw-chips">
+        <span class="chip" id="gpu-temp-{{ gpu.index }}">{{ gpu.temperature_c }}°C</span>
+        <span class="chip" id="gpu-util-{{ gpu.index }}">{{ gpu.utilization_pct }}% util</span>
+        <span class="chip" id="gpu-pwr-{{ gpu.index }}">{{ gpu.power_draw_w|round(0)|int }}W / {{ gpu.power_limit_w|round(0)|int }}W</span>
+      </div>
+    </div>
+    {% else %}
+    <div class="hw-card hw-warn">
+      <div class="hw-label">GPU</div>
+      <div class="hw-name">No NVIDIA GPU detected</div>
+      <div class="hw-chips"><span class="chip chip-warn">CPU only</span></div>
+    </div>
+    {% endfor %}
+
+    <div class="hw-card" id="cpu-card">
+      <div class="hw-label">CPU</div>
+      <div class="hw-name">{{ cpu.model }}</div>
+      <div class="hw-row">
+        <span class="hw-key">RAM</span>
+        <div class="bar-wrap">
+          <div class="bar-fill bar-cpu" id="ram-bar"
+               style="width:{{ ((cpu.ram_total_gb - cpu.ram_available_gb) / cpu.ram_total_gb * 100)|round(1) }}%"></div>
+        </div>
+        <span class="hw-val" id="ram-val">
+          {{ (cpu.ram_total_gb - cpu.ram_available_gb)|round(1) }} / {{ cpu.ram_total_gb }} GB
+        </span>
+      </div>
+      <div class="hw-chips">
+        <span class="chip">{{ cpu.cores_logical }} threads</span>
+        <span class="chip" id="ram-avail">{{ cpu.ram_available_gb }} GB free</span>
+      </div>
+    </div>
+
+    <button class="btn-icon" id="hw-refresh-btn" title="Refresh hardware stats">&#8635;</button>
+  </section>
+
+  <!-- ===== Status banner ===== -->
+  <div id="status-banner" class="banner
+    {% if model_state.vae_ready %}banner-ok{% else %}banner-warn{% endif %}">
+    {% if model_state.vae_ready %}
+      {% set am = model_state.active_model %}
+      {% if am %}
+        Active: <strong>{{ am.name }}</strong>
+        {% if am.backend == 'vae_lstm' %}
+          &mdash; VAE ep{{ am.vae_epoch }}
+          {% if am.vae_val_loss %} (val={{ "%.4f"|format(am.vae_val_loss) }}){% endif %}
+          {% if not am.lstm_path %}&nbsp;· no LSTM{% endif %}
+        {% elif am.backend == 'rave' %}
+          &mdash; RAVE {{ am.config.config if am.config else '' }}
+        {% endif %}
+        {% if model_state.cache_loaded %}&nbsp;· <em>loaded in memory</em>{% endif %}
+      {% else %}
+        Model ready for generation
+      {% endif %}
+    {% else %}
+      No model trained yet &mdash; preprocess data then start training.
+    {% endif %}
+  </div>
+
+  <!-- ===== Tabs ===== -->
+  <nav class="tabs">
+    <button class="tab active" data-tab="data">Data</button>
+    <button class="tab" data-tab="train">Train</button>
+    <button class="tab" data-tab="generate">Generate</button>
+    <button class="tab" data-tab="models">Models</button>
+    <button class="tab" data-tab="history">History</button>
+  </nav>
+
+  <!-- ===================================================================
+       TAB: Data
+  ==================================================================== -->
+  <div class="tab-panel active" id="tab-data">
+    <div class="panel-grid two-col">
+
+      <!-- Left: data folder + status -->
+      <div class="panel-left">
+
+        <div class="param-group">
+          <div class="param-group-title">Data folder</div>
+          <div class="field-row">
+            <label for="data-dir-input">Path</label>
+            <input type="text" id="data-dir-input" value="{{ data_dir }}"
+                   placeholder="/path/to/audio/files" />
+            <div class="field-hint">All audio in this folder is used for training. Supports MP3, WAV, FLAC, OGG, AAC, OPUS. Changes are saved automatically.</div>
+          </div>
+          <div class="btn-row" style="margin-top:8px">
+            <button class="btn-secondary" id="data-dir-save-btn">Apply folder</button>
+            <span id="data-dir-status" class="hint" style="align-self:center"></span>
+          </div>
+        </div>
+
+        <!-- Data status -->
+        <div id="data-status-panel" class="param-group">
+          <div class="param-group-title">Data status</div>
+          <div id="data-status-body" class="hint">Loading…</div>
+        </div>
+
+        <!-- VAE preprocessing -->
+        <div class="param-group">
+          <div class="param-group-title">VAE preprocessing</div>
+          <p class="hint" style="margin-bottom:8px">Converts audio to mel-spectrogram chunks used by the VAE+LSTM pipeline.</p>
+          <div class="field-row">
+            <label for="hop-fraction">Overlap</label>
+            <div class="slider-wrap">
+              <input type="range" id="hop-fraction" min="0.1" max="0.9" step="0.05"
+                     value="{{ prec.hop_fraction }}" />
+              <span class="slider-val" id="hop-fraction-val">
+                {{ prec.hop_fraction }} ({{ (prec.hop_fraction * 100)|round|int }}% overlap)
+              </span>
+            </div>
+            <div class="field-hint">{{ prec.rationale.hop_fraction }}</div>
+          </div>
+          <div id="preprocess-stats" class="stats-box {% if not model_state.preprocessed %}hidden{% endif %}" style="margin-top:8px">
+            Loading stats…
+          </div>
+          <div id="data-assessment" class="{% if not model_state.preprocessed %}hidden{% endif %}"
+               style="margin-top:8px"></div>
+          <div class="btn-row" style="margin-top:8px">
+            <button class="btn-primary" id="preprocess-btn">Run VAE preprocessing</button>
+          </div>
+        </div>
+
+        <!-- RAVE preprocessing -->
+        <div class="param-group">
+          <div class="param-group-title">RAVE preprocessing</div>
+          <p class="hint" style="margin-bottom:8px">Converts audio to RAVE's LMDB format. Required before RAVE training.</p>
+          <div class="field-row">
+            <label for="rave-sr">Sample rate</label>
+            <select id="rave-sr">
+              <option value="44100" selected>44100 Hz — best quality</option>
+              <option value="22050">22050 Hz — faster</option>
+            </select>
+          </div>
+          <div id="rave-preprocess-status-data" class="hint" style="margin-top:6px">Loading…</div>
+          <div class="btn-row" style="margin-top:8px">
+            <button class="btn-secondary" id="rave-preprocess-btn">Run RAVE preprocessing</button>
+          </div>
+        </div>
+
+      </div>
+
+      <!-- Right: shared preprocessing log -->
+      <div class="panel-right">
+        <h3 class="section-title">Preprocessing log</h3>
+        <div class="live-status" id="preprocess-status-line">Idle</div>
+        <div class="log-box" style="flex:1;height:400px">
+          <div class="log-inner" id="preprocess-log-inner">Log will appear here…</div>
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- ===================================================================
+       TAB: Train
+  ==================================================================== -->
+  <div class="tab-panel" id="tab-train">
+
+    <!-- Backend selector -->
+    <div class="backend-selector">
+      <button class="backend-btn active" id="backend-vae-btn" onclick="selectBackend('vae_lstm')">
+        VAE + LSTM
+        <span class="backend-desc">custom mel-VAE pipeline</span>
+      </button>
+      <button class="backend-btn" id="backend-rave-btn" onclick="selectBackend('rave')">
+        RAVE
+        <span class="backend-desc">adversarial waveform model — better audio</span>
+      </button>
+    </div>
+
+    <div class="panel-grid two-col" style="margin-top:16px">
+
+      <!-- ===== VAE+LSTM left column ===== -->
+      <div class="panel-left" id="vae-panel">
+
+        <div class="param-group">
+          <div class="param-group-title">Stage</div>
+          <div class="radio-row">
+            <label><input type="radio" name="stage" value="both" checked /> VAE + LSTM (full)</label>
+            <label><input type="radio" name="stage" value="vae"  /> VAE only</label>
+            <label><input type="radio" name="stage" value="lstm" /> LSTM only</label>
+          </div>
+        </div>
+
+        <div class="param-group">
+          <div class="param-group-title">Model</div>
+          <div class="field-row">
+            <label for="p-latent-dim">Latent dim</label>
+            <select id="p-latent-dim">
+              <option value="64">64 — tiny</option>
+              <option value="128" selected>128 — default</option>
+              <option value="192">192 — high quality</option>
+              <option value="256">256 — max quality</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="param-group">
+          <div class="param-group-title">VAE</div>
+          <div class="field-row">
+            <label for="p-vae-batch">Batch size</label>
+            <input type="number" id="p-vae-batch" value="32" min="4" max="2048" step="4" />
+          </div>
+          <div class="field-row">
+            <label for="p-vae-epochs">Epochs</label>
+            <input type="number" id="p-vae-epochs" value="50" min="1" max="5000" />
+          </div>
+          <div class="field-row">
+            <label for="p-lr-vae">Learning rate</label>
+            <input type="number" id="p-lr-vae" value="0.0002" min="1e-6" max="0.1" step="0.0001" />
+          </div>
+          <div class="field-row">
+            <label for="p-kl-max">KL max weight</label>
+            <input type="number" id="p-kl-max" value="0.0005" min="1e-6" max="0.1" step="0.0001" />
+            <div class="field-hint">KL annealing target. Lower = less posterior collapse risk on small datasets.</div>
+          </div>
+          <div class="field-row">
+            <label for="p-kl-ramp">KL ramp %</label>
+            <input type="number" id="p-kl-ramp" value="0.4" min="0.05" max="0.9" step="0.05" />
+          </div>
+        </div>
+
+        <div class="param-group">
+          <div class="param-group-title">LSTM</div>
+          <div class="field-row">
+            <label for="p-lstm-batch">Batch size</label>
+            <input type="number" id="p-lstm-batch" value="128" min="4" max="4096" step="8" />
+          </div>
+          <div class="field-row">
+            <label for="p-lstm-epochs">Epochs</label>
+            <input type="number" id="p-lstm-epochs" value="30" min="1" max="5000" />
+          </div>
+          <div class="field-row">
+            <label for="p-lr-lstm">Learning rate</label>
+            <input type="number" id="p-lr-lstm" value="0.001" min="1e-6" max="0.1" step="0.0001" />
+          </div>
+          <div class="field-row">
+            <label for="p-seq-len">Sequence length</label>
+            <input type="number" id="p-seq-len" value="16" min="4" max="256" />
+            <div class="field-hint">4-second chunks per sequence — longer = more temporal context.</div>
+          </div>
+        </div>
+
+        <div class="param-group">
+          <div class="param-group-title">Hardware &amp; checkpointing</div>
+          <div class="field-row">
+            <label for="p-device">Device</label>
+            <select id="p-device">
+              {% for gpu in gpus %}
+              <option value="cuda:{{ gpu.index }}" selected>CUDA {{ gpu.index }} — {{ gpu.name }}</option>
+              {% endfor %}
+              <option value="cpu" {% if not gpus %}selected{% endif %}>CPU</option>
+            </select>
+          </div>
+          <div class="field-row">
+            <label for="p-workers">Workers</label>
+            <input type="number" id="p-workers" value="{{ rec.num_workers }}" min="0" max="16" />
+          </div>
+          <div class="field-row">
+            <label for="p-checkpoint-every">Save every N epochs</label>
+            <input type="number" id="p-checkpoint-every" value="50" min="0" max="1000" step="10" />
+            <div class="field-hint">0 = best only. Periodic saves appear in the Models tab.</div>
+          </div>
+        </div>
+
+        <!-- VRAM estimate -->
+        <div class="vram-estimate" id="vram-estimate">
+          <div class="vram-est-title">VRAM estimate <button class="btn-text" id="vram-refresh-btn">recalculate</button></div>
+          <div class="vram-est-row">
+            <span>VAE:</span>
+            <div class="bar-wrap"><div class="bar-fill" id="vae-est-bar" style="width:0%"></div></div>
+            <span id="vae-est-val">—</span>
+          </div>
+          <div class="vram-est-row">
+            <span>LSTM:</span>
+            <div class="bar-wrap"><div class="bar-fill" id="lstm-est-bar" style="width:0%"></div></div>
+            <span id="lstm-est-val">—</span>
+          </div>
+          <div id="vram-est-warnings" class="warn-list"></div>
+        </div>
+
+        <details class="param-group hidden" id="smart-rationale-wrap">
+          <summary class="param-group-title" style="cursor:pointer">Why these values? ▸</summary>
+          <div id="smart-rationale" style="margin-top:8px;display:flex;flex-direction:column;gap:4px"></div>
+        </details>
+
+        <div class="btn-row">
+          <button class="btn-secondary" id="smart-defaults-btn">&#9889; Smart defaults</button>
+          <button class="btn-primary" id="train-btn">Start training</button>
+          <button class="btn-danger hidden" id="stop-btn">Stop</button>
+        </div>
+      </div>
+
+      <!-- ===== RAVE left column ===== -->
+      <div class="panel-left" id="rave-panel" style="display:none">
+
+        <!-- Step 1: Install -->
+        <div class="param-group" id="rave-step-install">
+          <div class="param-group-title">Step 1 — Install RAVE</div>
+          <div id="rave-install-status" class="hint">Checking…</div>
+          <div class="btn-row" style="margin-top:8px">
+            <button class="btn-secondary hidden" id="rave-install-btn">Install acids-rave</button>
+          </div>
+        </div>
+
+        <!-- Step 2: Preprocess status (preprocessing happens in Data tab) -->
+        <div class="param-group" id="rave-step-preprocess">
+          <div class="param-group-title">Step 2 — RAVE preprocessing</div>
+          <div id="rave-preprocess-status" class="hint">Check status in the Data tab.</div>
+          <div class="btn-row" style="margin-top:6px">
+            <button class="btn-text" onclick="document.querySelector('[data-tab=data]').click()">
+              → Go to Data tab to preprocess
+            </button>
+          </div>
+        </div>
+
+        <!-- Step 3: Train -->
+        <div class="param-group" id="rave-step-train">
+          <div class="param-group-title">Step 3 — Train RAVE</div>
+
+          <div class="field-row">
+            <label for="rave-name">Model name</label>
+            <input type="text" id="rave-name" value="lambert" />
+          </div>
+          <div class="field-row">
+            <label for="rave-config">Config</label>
+            <select id="rave-config">
+              <option value="v2" selected>v2 — best for piano / melodic</option>
+              <option value="v1">v1 — original (complex textures)</option>
+            </select>
+          </div>
+          <div class="field-row">
+            <label for="rave-n-signal">Window size</label>
+            <select id="rave-n-signal">
+              <option value="131072" selected>131072 — ~3s context (must match preprocess)</option>
+            </select>
+            <div class="field-hint">Must match the <code>num_signal</code> used in preprocessing (131072). Changing this requires re-preprocessing.</div>
+          </div>
+          <div class="field-row">
+            <label for="rave-batch">Batch size</label>
+            <input type="number" id="rave-batch" value="8" min="1" max="64" />
+          </div>
+          <div class="field-row">
+            <label for="rave-steps">Steps</label>
+            <select id="rave-steps">
+              <option value="100000">100 000 — quick test (~1 h)</option>
+              <option value="500000" selected>500 000 — good results (~4 h)</option>
+              <option value="2000000">2 000 000 — best quality (~16 h)</option>
+            </select>
+          </div>
+          <div class="field-row">
+            <label for="rave-workers">Workers</label>
+            <input type="number" id="rave-workers" value="4" min="0" max="16" />
+          </div>
+
+          <!-- VRAM estimate for RAVE -->
+          <div id="rave-vram-estimate" class="vram-estimate" style="margin-top:8px">
+            <div class="vram-est-title">VRAM estimate</div>
+            <div class="vram-est-row">
+              <span>RAVE v2:</span>
+              <div class="bar-wrap"><div class="bar-fill" id="rave-vram-bar" style="width:0%"></div></div>
+              <span id="rave-vram-val">—</span>
+            </div>
+            <div id="rave-vram-warnings" class="warn-list"></div>
+          </div>
+
+          <div id="rave-rationale" class="hint" style="white-space:pre-line;margin-top:6px"></div>
+
+          <div class="btn-row" style="margin-top:8px">
+            <button class="btn-secondary" id="rave-smart-btn">&#9889; Smart defaults</button>
+            <button class="btn-primary" id="rave-train-btn">Train RAVE</button>
+            <button class="btn-danger hidden" id="rave-stop-btn">Stop &amp; export</button>
+          </div>
+        </div>
+
+      </div>
+
+      <!-- Right column: shared live stats -->
+      <div class="panel-right">
+        <h3 class="section-title">Live</h3>
+
+        <div class="live-status" id="live-status">Idle</div>
+
+        <!-- Progress bar (used by both backends) -->
+        <div id="train-progress-wrap" style="display:none" class="live-vram">
+          <div class="hw-row">
+            <span class="hw-key" id="progress-label">Progress</span>
+            <div class="bar-wrap">
+              <div class="bar-fill bar-ok" id="train-progress-bar" style="width:0%"></div>
+            </div>
+            <span class="hw-val" id="train-progress-val">0 / ?</span>
+          </div>
+        </div>
+
+        <div class="live-vram" id="live-vram-wrap">
+          <div class="hw-row">
+            <span class="hw-key">VRAM</span>
+            <div class="bar-wrap">
+              <div class="bar-fill" id="live-vram-bar" style="width:0%"></div>
+            </div>
+            <span class="hw-val" id="live-vram-val">—</span>
+          </div>
+        </div>
+
+        <div class="chart-wrap" id="vae-chart-wrap">
+          <canvas id="loss-chart"></canvas>
+        </div>
+
+        <div class="log-box" id="train-log-box" style="flex:1;height:300px">
+          <div class="log-inner" id="train-log-inner">Log will appear here…</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===================================================================
+       TAB: Generate
+  ==================================================================== -->
+  <div class="tab-panel" id="tab-generate">
+    <div class="panel-grid">
+      <div class="panel-left">
+        <h3 class="section-title">Generation settings</h3>
+
+        <div id="gen-no-vae-warn" class="banner banner-warn"
+             style="margin-bottom:16px{% if model_state.vae_ready %};display:none{% endif %}">
+          VAE not trained — train the model first.
+        </div>
+
+        <div id="gen-no-lstm-warn" class="banner banner-warn"
+             style="margin-bottom:16px{% if model_state.lstm_ready or not model_state.vae_ready %};display:none{% endif %}">
+          LSTM not trained — using spherical latent interpolation (less temporally coherent).
+        </div>
+
+        <div class="field-row">
+          <label for="g-duration">Duration</label>
+          <div class="slider-wrap">
+            <input type="range" id="g-duration" min="5" max="300" step="5" value="20" />
+            <span class="slider-val" id="g-duration-val">20 s</span>
+          </div>
+        </div>
+
+        <div class="field-row">
+          <label for="g-temperature">Temperature</label>
+          <div class="slider-wrap">
+            <input type="range" id="g-temperature" min="0.1" max="3.0" step="0.05" value="1.0" />
+            <span class="slider-val" id="g-temperature-val">1.00</span>
+          </div>
+          <div class="field-hint">Low (0.3–0.7) = calm, predictable. High (1.2–2.0) = experimental, chaotic.</div>
+        </div>
+
+        <div class="field-row">
+          <label for="g-gl-iters">Griffin-Lim iters</label>
+          <div class="slider-wrap">
+            <input type="range" id="g-gl-iters" min="16" max="256" step="8" value="64" />
+            <span class="slider-val" id="g-gl-iters-val">64</span>
+          </div>
+          <div class="field-hint">More iterations = higher audio quality but slower generation. 64–128 is a good range.</div>
+        </div>
+
+        <div class="field-row">
+          <label for="g-seed">Seed</label>
+          <input type="number" id="g-seed" placeholder="random" min="0" max="2147483647" />
+          <div class="field-hint">Leave blank for random. Use a number to reproduce a specific generation.</div>
+        </div>
+
+        <div class="btn-row">
+          <button class="btn-primary" id="generate-btn"
+            {% if not model_state.vae_ready %}disabled{% endif %}>
+            Generate
+          </button>
+        </div>
+      </div>
+
+      <div class="panel-right">
+        <h3 class="section-title">Output</h3>
+
+        <section id="gen-progress" class="hidden">
+          <div class="spinner"></div>
+          <p id="gen-progress-msg">Generating…</p>
+        </section>
+
+        <section id="player-section" class="hidden">
+          <div class="waveform-container">
+            <canvas id="waveform" height="80"></canvas>
+          </div>
+          <audio id="audio-player" controls></audio>
+          <div class="player-actions">
+            <a id="download-link" class="btn-secondary" download="lambertify.wav">
+              &#8595; Download WAV
+            </a>
+          </div>
+        </section>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===================================================================
+       TAB: Models
+  ==================================================================== -->
+  <div class="tab-panel" id="tab-models">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+      <h3 class="section-title" style="border:none;margin:0">Trained models</h3>
+      <button class="btn-icon" id="models-refresh-btn" title="Refresh">&#8635;</button>
+    </div>
+    <p class="hint" style="margin-bottom:16px">
+      Each training run creates a versioned model. Activate one to use it for generation.
+      Load it into memory for fast generation; unload to free VRAM.
+    </p>
+
+    <!-- Active model / cache status -->
+    <div id="model-cache-status" class="live-status" style="margin-bottom:16px">Loading…</div>
+
+    <!-- Models list -->
+    <div id="models-list">Loading…</div>
+  </div>
+
+  <!-- ===================================================================
+       TAB: Outputs
+  ==================================================================== -->
+  <div class="tab-panel" id="tab-outputs">
+    <h3 class="section-title">Generated files</h3>
+    <p class="hint">Previously generated audio files from <code>outputs/</code>.</p>
+    <div id="outputs-list" class="outputs-list">Loading…</div>
+  </div>
+
+  <!-- ===================================================================
+       TAB: History
+  ==================================================================== -->
+  <div class="tab-panel" id="tab-history">
+
+    <div class="history-section">
+      <h3 class="section-title">Training runs</h3>
+      <p class="hint" style="margin-bottom:12px">
+        Every training run is saved to <code>logs/runs/</code> as JSON with full loss curves,
+        VRAM snapshots, hyperparameters, and any error tracebacks.
+        Click a row to expand the full detail.
+      </p>
+      <div id="history-runs-list">Loading…</div>
+    </div>
+
+    <div class="history-section" style="margin-top:28px">
+      <h3 class="section-title">Generations</h3>
+      <p class="hint" style="margin-bottom:12px">
+        Every generation call is appended to <code>logs/generations.jsonl</code>
+        with parameters, timing, model checkpoint info, and output filename.
+      </p>
+      <div id="history-gens-list">Loading…</div>
+    </div>
+
+    <div class="history-section" style="margin-top:28px">
+      <h3 class="section-title">Event stream</h3>
+      <p class="hint" style="margin-bottom:12px">
+        Raw append-only log at <code>logs/events.jsonl</code>.
+      </p>
+      <div class="log-box" style="height:200px">
+        <div class="log-inner" id="history-events-log">Loading…</div>
+      </div>
+    </div>
+
+  </div>
+
+</div><!-- /.app -->
+
+<script src="/static/script.js"></script>
+</body>
+</html>
