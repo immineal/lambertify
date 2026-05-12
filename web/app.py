@@ -803,6 +803,9 @@ def api_rave_status():
         "vram_estimate":    _rave.estimate_vram_mb(
             batch_size=int(request.args.get("batch", 8))
         ),
+        "latest_checkpoint": _rave.latest_checkpoint(
+            request.args.get("name", _cfg.get("rave", {}).get("name", "lambert"))
+        ),
         **_model_state(),   # vae_ready, active_model, cache_loaded — used by JS to manage generate-tab warnings
         "log_tail":         _rave_state["log"][-100:],
     })
@@ -879,15 +882,28 @@ def api_rave_train():
 
     d = request.get_json(force=True) or {}
     import src.rave_backend as _rb
+    name = d.get("name", "lambert")
     params = {
-        "name":        d.get("name",    "lambert"),
+        "name":        name,
         "config":      d.get("config",  "v2"),
-        "n_signal":    _rb.RAVE_NUM_SIGNAL,          # always 131072 — must match preprocessing
+        "n_signal":    _rb.RAVE_NUM_SIGNAL,
         "batch_size":  int(d.get("batch_size", 8)),
         "n_steps":     int(d.get("n_steps",    500_000)),
         "workers":     int(d.get("workers",    4)),
         "sample_rate": int(d.get("sample_rate", 44100)),
     }
+
+    # Resume from latest checkpoint if requested or if no checkpoint is specified
+    resume_from: str | None = None
+    if d.get("resume"):
+        ck = _rave.latest_checkpoint(name)
+        if ck:
+            resume_from = ck["path"]
+            _rave_log(f"Resuming from checkpoint: {ck['path']} "
+                      f"(epoch {ck['epoch']}, global_step {ck['global_step']:,}, "
+                      f"saved {ck['mtime_str']})")
+        else:
+            _rave_log("No checkpoint found — starting from scratch")
 
     _rave_state.update(
         status="training", step=0, total_steps=params["n_steps"],
@@ -896,10 +912,9 @@ def api_rave_train():
     )
     _rave_state["log"].clear()
     _rave_stop_event.clear()
-    _rave_log(f"Starting RAVE training — {params}")
+    _rave_log(f"{'Resuming' if resume_from else 'Starting'} RAVE training — {params}")
 
     def _vram_poll():
-        """Poll GPU VRAM every 5 s while RAVE training is active."""
         while _rave_state["status"] == "training":
             gpus = query_gpus()
             if gpus:
@@ -912,6 +927,7 @@ def api_rave_train():
         try:
             model_path = _rave.train(
                 **params,
+                resume_from=resume_from,
                 log_cb=_rave_log,
                 step_cb=_rave_step_cb,
                 stop_event=_rave_stop_event,

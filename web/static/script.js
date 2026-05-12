@@ -1023,6 +1023,37 @@ document.getElementById('rave-smart-btn')?.addEventListener('click', async () =>
   } catch (_) {}
 });
 
+document.getElementById('rave-resume-btn')?.addEventListener('click', async () => {
+  const btn  = document.getElementById('rave-resume-btn');
+  const stop = document.getElementById('rave-stop-btn');
+  btn.disabled = true;
+  stop.classList.remove('hidden');
+  showRaveProgress('training');
+  await postJSON('/api/config', { rave: {
+    name:        document.getElementById('rave-name')?.value  || 'lambert',
+    config:      document.getElementById('rave-config')?.value || 'v2',
+    batch_size:  intVal('rave-batch', 8),
+    n_steps:     intVal('rave-steps', 500000),
+    workers:     intVal('rave-workers', 4),
+  }}).catch(() => {});
+  try {
+    await postJSON('/api/rave/train', {
+      name:        document.getElementById('rave-name')?.value  || 'lambert',
+      config:      document.getElementById('rave-config')?.value || 'v2',
+      n_signal:    intVal('rave-n-signal',  131072),
+      batch_size:  intVal('rave-batch',     8),
+      n_steps:     intVal('rave-steps',     500000),
+      workers:     intVal('rave-workers',   4),
+      resume:      true,
+    });
+    startRavePoll();
+  } catch (e) {
+    btn.disabled = false;
+    stop.classList.add('hidden');
+    showRaveProgress('idle');
+  }
+});
+
 document.getElementById('rave-train-btn')?.addEventListener('click', async () => {
   const btn  = document.getElementById('rave-train-btn');
   const stop = document.getElementById('rave-stop-btn');
@@ -1114,11 +1145,28 @@ function applyRaveStatus(s) {
     }
   }
 
-  // Train buttons
-  const trainBtn = document.getElementById('rave-train-btn');
-  const stopBtn  = document.getElementById('rave-stop-btn');
-  if (trainBtn) {
-    trainBtn.disabled = !s.installed || s.status === 'training';
+  // Train / Resume / Stop buttons
+  const trainBtn  = document.getElementById('rave-train-btn');
+  const resumeBtn = document.getElementById('rave-resume-btn');
+  const stopBtn   = document.getElementById('rave-stop-btn');
+  const ck        = s.latest_checkpoint;
+  if (trainBtn)  trainBtn.disabled  = !s.installed || s.status === 'training';
+  if (resumeBtn) {
+    const canResume = s.installed && s.status !== 'training' && ck?.path;
+    resumeBtn.classList.toggle('hidden', !canResume);
+    resumeBtn.disabled = s.status === 'training';
+  }
+  // Resume checkpoint banner
+  const resumeBanner = document.getElementById('rave-resume-banner');
+  const resumeInfo   = document.getElementById('rave-resume-info');
+  if (resumeBanner && resumeInfo) {
+    if (ck?.path && s.status !== 'training') {
+      resumeInfo.textContent =
+        `epoch ${ck.epoch}, step ${(ck.global_step||0).toLocaleString()}, saved ${ck.mtime_str}`;
+      resumeBanner.style.display = '';
+    } else {
+      resumeBanner.style.display = 'none';
+    }
   }
 
   // Shared live status bar

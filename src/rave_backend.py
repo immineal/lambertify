@@ -269,6 +269,41 @@ def find_run_dir(name: str) -> Path | None:
     return Path(dirs[0]) if dirs else None
 
 
+def latest_checkpoint(name: str) -> dict | None:
+    """Locate the most recently-written .ckpt file for a given run name.
+
+    Returns {path, global_step, epoch, mtime_str} for the freshest checkpoint
+    across all version_N subdirectories, or None if nothing trainable exists.
+    Prefers `last*.ckpt` over `best*.ckpt` because last is always the most
+    recent state (best only updates on validation improvement).
+    """
+    run_dir = find_run_dir(name)
+    if not run_dir:
+        return None
+    candidates = []
+    for ckpt in run_dir.rglob("*.ckpt"):
+        # last.ckpt and last-v*.ckpt are guaranteed-recent
+        is_last = ckpt.stem.startswith("last")
+        candidates.append((ckpt.stat().st_mtime, is_last, ckpt))
+    if not candidates:
+        return None
+    # Sort: newest first, prefer last.ckpt at the same mtime
+    candidates.sort(key=lambda c: (c[0], c[1]), reverse=True)
+    best = candidates[0][2]
+    try:
+        import torch, time as _t
+        meta = torch.load(best, map_location="cpu", weights_only=False)
+        return {
+            "path":         str(best),
+            "global_step":  meta.get("global_step", 0),
+            "epoch":        meta.get("epoch", 0),
+            "mtime_str":    _t.strftime("%Y-%m-%d %H:%M",
+                                        _t.localtime(best.stat().st_mtime)),
+        }
+    except Exception:
+        return {"path": str(best), "global_step": 0, "epoch": 0, "mtime_str": "?"}
+
+
 def train(
     name: str,
     config: str         = "v2",
@@ -278,6 +313,7 @@ def train(
     workers: int        = 4,
     sample_rate: int    = 44100,
     db_path: str | None = None,
+    resume_from: str | None = None,
     log_cb:  LogCB      = None,
     step_cb: StepCB     = None,
     stop_event: threading.Event | None = None,
@@ -317,10 +353,14 @@ def train(
         "--workers",   str(workers),
         *gpu_flags,
     ]
+    if resume_from:
+        cmd.extend(["--ckpt", resume_from])
 
     if log_cb:
         log_cb(f"[rave train] {' '.join(cmd)}")
         log_cb(f"[rave train] cwd={ROOT}")
+        if resume_from:
+            log_cb(f"[rave train] resuming from {resume_from}")
 
     env = {**os.environ, "PYTHONUNBUFFERED": "1"}
 
