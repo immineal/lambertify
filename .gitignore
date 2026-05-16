@@ -13,3 +13,4 @@ venv/
 runs/
 status/
 config.json
+claude-token
